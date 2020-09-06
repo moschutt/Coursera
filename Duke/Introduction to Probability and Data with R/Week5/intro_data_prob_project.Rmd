@@ -1,0 +1,325 @@
+---
+title: "Exploring the BRFSS data"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+---
+
+## Setup
+
+### Load packages
+
+```{r load-packages, message = FALSE}
+library(tidyverse)
+```
+
+### Load data
+
+```{r load-data}
+load("brfss2013.RData")
+```
+
+* * *
+
+## Part 1: Data
+
+The data is collected for non-institutionalized adults 18 or older living in 
+the  United States of America by randomly contacting subjects by phone, 
+household land-line or cell-phone.  cell-phone interviews are collected for 
+adults indicating they live in a private residence or college housing.
+
+Data are collected annually for all 50 states, the District of Columbia, 
+Puerto Rico, Guam and the U.S. Virgin.  And are collected at limited points 
+in time for American Samoa, Federated States of Micronesia and Palau.
+
+As the data are randomly collected sample from the full population of the 
+U.S., results should be generalizable to the full adult population. The 
+collection of demographic information provides the ability to stratify the data
+to identify possible confounding factors such as geographic location, 
+ethnicity related factors, etc.  However, as some collection is done via 
+cell phone there is no way to validate that the subjects interviewed lives
+at a private residence or college housing which could lead to some possible
+out of scope subjects getting included.
+
+In addition to data collected about the subjects, data about the condition,
+time and other environmental factors are collected.   There are also a large
+number of calculated fields consolidating information from multiple questions
+or inferring new information based on other responses.
+
+* * *
+
+## Part 2: Research questions
+
+**Research question 1:**
+Is there a relationship between a subjects weight and the likelihood of having
+had a heart attack or having been diagnosed with cardiovascular disease?
+
+This information can be used to help people determine their risk of hear attack
+based on their own weight.
+
+**Research question 2:**
+Are Veterans more likely to suffer from depression than non-veterans?
+
+Can be used by the veteran administration to determine how much to allocate
+for mental health services.
+
+It can also be used to help veterans who might be suffering from a depressive
+disorder to understand they are not alone so they will be more likely to 
+get treated.
+
+**Research question 3:**
+Is there a relationship between Sugar Drinks use and rates of pre-diabetes and 
+diabetes?
+
+For health care professionals, if a correlation is identified this can be used
+guide patients and possibly reduce instances of diabetes or for people who are
+already diagnosed, if there is a correlation changing their consumption could
+aid in treating the condition.
+
+* * *
+
+## Part 3: Exploratory data analysis
+
+### Question 1
+
+**Is there a relationship between a subjects weight and the likelihood of having
+had a heart attack or having been diagnosed with cardiovascular disease?**
+
+Step 1, get the metrics needed to answer the question, these are a subjects 
+weight, height and cardiovascular history.  As a subjects weight is relative
+to their height I will be using  (BMI)[https://www.cdc.gov/healthyweight/assessing/bmi/index.html] (X_bmi), which 
+is a ratio of height to weight instead of just weight.  
+
+Only keep data where we know the subject is a resident of the state they were
+in when the subject was interviewed and that they live in a private residence.
+
+```{r}
+hrt_data_1 <- brfss2013 %>%
+  select(X_state, pvtresd1, stateres, sex,
+         cvdinfr4, cvdcrhd4, htm4, wtkg3, X_bmi5) %>%
+  filter(pvtresd1 == "Yes" & 
+           stateres == "Yes")
+
+summary(hrt_data_1)
+```
+Remove unusually (probably erroneous) tall and short subjects and cases where 
+the height is NA.
+
+```{r}
+hrt_data_1 <- hrt_data_1 %>%
+  filter(!is.na(htm4) & htm4 < 500 & htm4 > 10)
+```
+
+Remove cases where the weight is NA and convert to decimal.  It is stored as
+an integer with the last 2 digits being values to the right of the decimal point.
+
+```{r}
+hrt_data_1 <- hrt_data_1 %>%
+  filter(!is.na(wtkg3)) %>%
+  mutate(wtkg3 = wtkg3 / 100)
+
+summary(hrt_data_1)
+```
+
+I'd say this looks good but I'm distressed by the large number of people over
+100kg, that's, at best, really sad.  We still have some NA's in BMI
+
+Next let's drop the NA's from Cardiovascular disease indicators and make them
+boolean values.  Also, set a single cardio value which indicates whether an
+subject has either had a heart attack or been diagnosed with caritvascular
+disease.
+
+I've also decided to calculate the BMI as picking apart the encoded one seems
+overly complicated and there are more NA's than I would expect.
+
+```{r}
+hrt_data_1 <- hrt_data_1 %>%
+  filter(!is.na(cvdinfr4) & !is.na(cvdcrhd4)) %>%
+  mutate(cvdinfr4=cvdinfr4=="Yes",
+         cvdcrhd4=cvdcrhd4=="Yes",
+         cardio=cvdinfr4 | cvdcrhd4,
+         bmi=wtkg3/(htm4/100)^2,
+         pvtresd1=NULL,
+         stateres=NULL,
+         X_bmi5=NULL)
+
+summary(hrt_data_1)
+```
+
+Add a factor indicating the relative level of weight based on the BMI.  The
+threshold values are based on the definitions on the above lined CDC BMI
+site.  I combined, low and normal weight and the 2 high obese categories to 
+keep things simple.
+
+```{r}
+bmi_factors = c("low_to_normal", "overweight", "obese",  
+                "severely to very severly obeses")
+hrt_data_1 <- hrt_data_1 %>%
+  mutate(bmi_category=case_when(
+    bmi < 25 ~ bmi_factors[1],
+    bmi < 30 ~ bmi_factors[2],
+    bmi < 35 ~ bmi_factors[3],
+    TRUE ~ bmi_factors[4]),
+    bmi_category=factor(bmi_category,levels=bmi_factors, ordered=TRUE))
+
+```
+
+```{r}
+hrt_data_1 %>%
+  group_by(sex, cardio, bmi_category) %>%
+  summarize(mean_bmi=mean(bmi),
+            count=length(bmi)
+            
+  )
+```
+Accounting for the subjects sex, what are the counts of people with and without
+cardiovascular conditions by BMI category and what percent of each group has
+cardiovascular conditions.
+
+```{r}
+as.data.frame(table(hrt_data_1[,c("cardio", "bmi_category", "sex")])) %>%
+  tidyr::pivot_wider(names_from=cardio, names_prefix="cardio_", values_from=Freq) %>%
+  mutate(pct_cardio=(cardio_TRUE / (cardio_FALSE + cardio_TRUE)) * 100)
+```
+
+There appears to be a positive correlation between BMI and cardiovascular 
+conditions for both men and women.
+
+**Research quesion 2:**
+
+**Are Veterans more likely to suffer from depression than non-veterans?**
+
+Get the required data.  Filter for only subjects who indicated a private 
+residence and were residents of the state they were in during the interview.
+Also remove any cases where sex, veteran status and whether they had been
+diagnosed with depression were not answered.
+
+```{r}
+vet_data_1 <- brfss2013 %>%
+  select(X_state, pvtresd1, stateres, sex,
+         veteran3, addepev2) %>%
+  filter(pvtresd1 == "Yes" & 
+           stateres == "Yes",
+         !is.na(sex),
+         !is.na(veteran3),
+         !is.na(addepev2))
+
+summary(vet_data_1)
+```
+
+```{r}
+vet_data_1 %>% 
+  select(sex, veteran3, addepev2) %>% 
+  table() %>%
+  as.data.frame() %>%
+  tidyr::pivot_wider(names_from=addepev2, 
+                     names_prefix="Depressed_", 
+                     values_from=Freq) %>%
+  mutate(pct_depressed=(Depressed_Yes/(Depressed_Yes + Depressed_No))*100)
+```
+
+Veterans do show a slightly higher incident of being depressed than non-veterans
+for both males and females.  27.1% of Female veterans have been diagnosed with a
+depressive disorder vs. 22.1% for non-vets.  The Male population also shows
+a higher rate of diagnosis but only slightly at 14.4% vs. 13.8 for Males.
+
+**Research quesion 3:**
+
+**Is there a relationship between Sugar Drinks use and rates of pre-diabetes and 
+diabetes?**
+
+Get the required data.  Filter for only subjects who indicated a private 
+residence and were residents of the state they were in during the interview.
+Also remove any cases where the subject reported diabetes diagnosis during
+pregnancy and where there was no answer (NA) for sugar sweetened drinks.
+
+Convert to total count of drinks per month, for drinks per week multiply by 4
+and for drinks per day multiply by 30.
+
+Add together pop and non-pop sugar sweetened drinks to 1 value.
+
+```{r}
+# Convert drinks count to monthly equivalent
+sugarCount <- function(value) {
+  v <- lapply(value, function(x) {
+    if ( x > 300 ) return((x - 300) / 30)
+    if ( x > 200 ) return((x - 200) / 7)
+    if ( x > 100 ) return(x - 100)
+    return(x)
+  }) 
+  
+  return(unlist(v))
+}
+
+
+pop_data_1 <- brfss2013 %>%
+  select(X_state, pvtresd1, stateres, sex,
+         prediab1, diabage2, 
+         ssbsugar, ssbfrut2) %>%
+  filter(pvtresd1 == "Yes" & 
+           stateres == "Yes" &
+           !is.na(sex) &
+           !is.na(prediab1) & prediab1 != "Yes, during pregnancy" &
+           !is.na(ssbsugar),
+         !is.na(ssbfrut2)) %>%
+  mutate(prediab1=prediab1 == "Yes",
+         ssbs=sugarCount(ssbsugar),
+         ssbf=sugarCount(ssbfrut2),
+         sugar_drinks_per_day=ssbs+ssbf,
+  )
+
+summary(pop_data_1)
+```
+```{r}
+pop_data_1 %>%
+  ggplot(aes(x=sugar_drinks_per_day)) +
+  geom_boxplot()
+```
+
+After filtering for pop, only 1 diabetes subject remained.  So, we will look 
+at pre-diabetes diagnosis only.
+
+The majority of data lies withing a small band at less 1 drink / day or less
+on average.   The data will be grouped into XX groups, no sugar drinks, 1 drink
+every other day (0.5 drinks per day), 1 drink per day, greater than 1 drink 
+per day.
+
+```{r}
+drinkRate <- function(dr, factors) {
+  
+  v <- lapply(dr, function(x) {
+    if (x == 0) return(factors[1])
+    if (x <= 0.5) return(factors[2])
+    if (x <= 1) return(factors[3])
+    if (x <= 3) return(factors[4])
+    return(factors[5])
+  })
+  
+  return(factor(unlist(v), levels=factors))
+}
+
+pop_data_2 <- pop_data_1 %>%
+  mutate(drink_cat=drinkRate(sugar_drinks_per_day, 
+                             c("none", "every other day", "1 a day", 
+                               "more than 1 less than 3 a day", "3 or more a day")))
+
+summary(pop_data_2)
+```
+
+```{r}
+pop_data_2 %>%
+  group_by(sex, prediab1, drink_cat) %>%
+  summarize(count=n()) %>%
+  tidyr::pivot_wider(names_from=prediab1, 
+                     names_prefix="diagnosed_pre_diabetes_",
+                     values_from=count) %>%
+  mutate(percent_pre_diabetes=(diagnosed_pre_diabetes_TRUE /
+                                 (diagnosed_pre_diabetes_TRUE + diagnosed_pre_diabetes_FALSE)) * 100)
+
+```  
+
+For males, there is a mostly negative correlation between number of sugary drinks
+and diagnosis of pre-diabetes.  For women the ratio of population in each group
+is relatively close.  Results are at best inconclusive.
